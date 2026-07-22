@@ -222,16 +222,6 @@ const server = http.createServer((req, res) => {
             return send(res, 502, JSON.stringify({ error: e.message }), { "content-type": "application/json" });
           }
         }
-        if (req.url === "/rich") {
-          const { url, method, headers, body: reqBody } = payload || {};
-          if (!isAllowedBharatPeUrl(url)) return send(res, 400, "bad url");
-          const result = await forward(url, headers || {}, (method || "GET").toUpperCase(), reqBody);
-          const sc = result.headers && (result.headers["set-cookie"] || result.headers["Set-Cookie"]);
-          const outHeaders = {};
-          if (sc) outHeaders["set-cookie"] = Array.isArray(sc) ? sc : [sc];
-          if (result.contentType) outHeaders["content-type"] = result.contentType;
-          return send(res, 200, JSON.stringify({ status: result.status, headers: outHeaders, body: result.body }), { "content-type": "application/json" });
-        }
         // default: bharatpe forward (GET only, body-only response)
         const { url, headers } = payload || {};
         if (!isAllowedBharatPeUrl(url)) return send(res, 400, "bad url");
