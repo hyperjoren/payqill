@@ -25,7 +25,7 @@ function cleanForwardHeaders(headers, host) {
     "accept","accept-language","authorization","cookie","referer",
     "sec-ch-ua","sec-ch-ua-mobile","sec-ch-ua-platform",
     "sec-fetch-dest","sec-fetch-mode","sec-fetch-site",
-    "token","user-agent","x-access-token",
+    "token","user-agent","x-access-token","x-xsrf-token","x-requested-with","content-type","origin",
   ]);
   const out = {};
   for (const [key, raw] of Object.entries(headers || {})) {
@@ -48,30 +48,36 @@ function isAllowedBharatPeUrl(value) {
   } catch { return false; }
 }
 
-function forward(url, headers) {
+function forward(url, headers, method = "GET", body) {
   return new Promise((resolve) => {
     const u = new URL(url);
     const started = Date.now();
+    const hdrs = cleanForwardHeaders(headers, u.hostname);
+    if (body != null) {
+      hdrs["Content-Length"] = Buffer.byteLength(body);
+      if (!hdrs["Content-Type"] && !hdrs["content-type"]) hdrs["Content-Type"] = "application/x-www-form-urlencoded";
+    }
     const req = https.request({
       protocol: "https:", hostname: u.hostname, port: 443,
-      path: u.pathname + u.search, method: "GET",
-      headers: cleanForwardHeaders(headers, u.hostname),
+      path: u.pathname + u.search, method,
+      headers: hdrs,
       timeout: 15000, family: 4,
       lookup: (hostname, opts, cb) => dns.lookup(hostname, { ...opts, family: 4 }, cb),
     }, (upstream) => {
       const chunks = []; let size = 0;
       upstream.on("data", (chunk) => { size += chunk.length; if (size <= 1024 * 1024) chunks.push(chunk); });
       upstream.on("end", () => {
-        const body = Buffer.concat(chunks).toString("utf8");
-        console.log("bharatpe", upstream.statusCode, Date.now() - started + "ms", u.hostname + u.pathname);
-        resolve({ status: upstream.statusCode || 502, body, contentType: upstream.headers["content-type"] || "text/plain; charset=utf-8" });
+        const buf = Buffer.concat(chunks).toString("utf8");
+        console.log("bharatpe", method, upstream.statusCode, Date.now() - started + "ms", u.hostname + u.pathname);
+        resolve({ status: upstream.statusCode || 502, body: buf, headers: upstream.headers, contentType: upstream.headers["content-type"] || "text/plain; charset=utf-8" });
       });
     });
     req.on("timeout", () => req.destroy(new Error("upstream timeout")));
     req.on("error", (error) => {
       console.error("bharatpe upstream error", error.code || error.name, error.message);
-      resolve({ status: 502, body: `${error.code || "UPSTREAM_ERROR"}: ${error.message}`, contentType: "text/plain; charset=utf-8" });
+      resolve({ status: 502, body: `${error.code || "UPSTREAM_ERROR"}: ${error.message}`, headers: {}, contentType: "text/plain; charset=utf-8" });
     });
+    if (body != null) req.write(body);
     req.end();
   });
 }
@@ -216,7 +222,17 @@ const server = http.createServer((req, res) => {
             return send(res, 502, JSON.stringify({ error: e.message }), { "content-type": "application/json" });
           }
         }
-        // default: bharatpe forward
+        if (req.url === "/rich") {
+          const { url, method, headers, body: reqBody } = payload || {};
+          if (!isAllowedBharatPeUrl(url)) return send(res, 400, "bad url");
+          const result = await forward(url, headers || {}, (method || "GET").toUpperCase(), reqBody);
+          const sc = result.headers && (result.headers["set-cookie"] || result.headers["Set-Cookie"]);
+          const outHeaders = {};
+          if (sc) outHeaders["set-cookie"] = Array.isArray(sc) ? sc : [sc];
+          if (result.contentType) outHeaders["content-type"] = result.contentType;
+          return send(res, 200, JSON.stringify({ status: result.status, headers: outHeaders, body: result.body }), { "content-type": "application/json" });
+        }
+        // default: bharatpe forward (GET only, body-only response)
         const { url, headers } = payload || {};
         if (!isAllowedBharatPeUrl(url)) return send(res, 400, "bad url");
         const result = await forward(url, headers);
